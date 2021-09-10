@@ -1,0 +1,59 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="msapplication-TileColor" content="#da532c" />
+    <meta name="theme-color" content="#313131" />
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="description" content="Creator: Wolfgang Schuster, Content: A small game about a slime.">
+
+    <title>Slime Buddy</title>
+
+    <link rel="manifest" href="./manifest.json" />
+    <link
+      rel="apple-touch-icon"
+      sizes="180x180"
+      href="/assets/icons/apple-touch-icon.png"
+    />
+    <link
+      rel="icon"
+      type="image/png"
+      sizes="32x32"
+      href="/assets/icons/favicon-32x32.png"
+    />
+    <link
+      rel="icon"
+      type="image/png"
+      sizes="16x16"
+      href="/assets/icons/favicon-16x16.png"
+    />
+    <link
+      rel="mask-icon"
+      href="/assets/icons/safari-pinned-tab.svg"
+      color="#313131"
+    />
+  </head>
+  <body>
+    <script src="elm.js"></script>
+    <script>
+      if('serviceWorker' in navigator) {
+        navigator.serviceWorker.register('/service-worker.js');
+      }
+      const saveKey = 'wolfadex_slime-buddy';
+      const savedSlime = localStorage.getItem(saveKey);
+      let savedData;
+
+      try {
+        savedData = JSON.parse(savedSlime);
+      } catch (e) {
+        // Placeholder
+      }
+
+      const app = Elm.Main.init({ flags: savedData });
+
+      app.ports.save.subscribe((slime) => {
+        localStorage.setItem(saveKey, JSON.stringify(slime));
+      });
+    </script>
+  </body>
+</html>
