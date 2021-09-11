@@ -4,8 +4,11 @@
     <meta charset="UTF-8" />
     <meta name="msapplication-TileColor" content="#da532c" />
     <meta name="theme-color" content="#313131" />
-    <meta name="viewport" content="width=device-width, initial-scale=1">
-    <meta name="description" content="Creator: Wolfgang Schuster, Content: A small game about a slime.">
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta
+      name="description"
+      content="Creator: Wolfgang Schuster, Content: A small slime on an adventure."
+    />
 
     <title>Slime Buddy</title>
 
@@ -36,10 +39,10 @@
   <body>
     <script src="elm.js"></script>
     <script>
-      if('serviceWorker' in navigator) {
-        navigator.serviceWorker.register('/service-worker.js');
+      if ("serviceWorker" in navigator) {
+        navigator.serviceWorker.register("/service-worker.js");
       }
-      const saveKey = 'wolfadex_slime-buddy';
+      const saveKey = "wolfadex_slime-buddy";
       const savedSlime = localStorage.getItem(saveKey);
       let savedData;
 
@@ -51,9 +54,9 @@
 
       const app = Elm.Main.init({ flags: savedData });
 
-      app.ports.save.subscribe((slime) => {
-        localStorage.setItem(saveKey, JSON.stringify(slime));
-      });
+      // app.ports.save.subscribe((slime) => {
+      //   localStorage.setItem(saveKey, JSON.stringify(slime));
+      // });
     </script>
   </body>
 </html>

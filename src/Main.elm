@@ -1,1295 +1,783 @@
-port module Main exposing (main)
+module Main exposing (main)
 
-import Browser exposing (Document)
-import Browser.Events exposing (onAnimationFrameDelta)
-import Css exposing (Style)
-import Css.Animations as Anims
-import Html.Styled as Html exposing (Html, toUnstyled)
-import Html.Styled.Attributes as Attrs
-import Html.Styled.Events as Events
-import Json.Decode as Decode exposing (Decoder, Value)
-import Json.Encode as Encode
-import Process
-import Random exposing (Generator)
+import Animator
+import Browser
+import Browser.Dom
+import Browser.Events
+import Html exposing (Html)
+import Html.Attributes as Attr
+import Json.Decode as Decode
 import Task
-import Time exposing (Month(..))
+import Time
 
 
-main : Program Value Model Msg
+
+{--}
+type alias Model =
+    { x : Float
+    , y : Float
+    , vx : Float
+    , vy : Float
+    , window : Window
+    , gamepad : GamePad
+    , mario : Animator.Timeline Mario
+    }
+
+
+type alias GamePad =
+    { left : Pressed
+    , right : Pressed
+    , jump : Pressed
+    , run : Pressed
+    , duck : Pressed
+    }
+
+
+type Pressed
+    = NotPressed
+    | StartPressed
+    | HeldFor Milliseconds
+
+
+type alias Milliseconds =
+    Float
+
+
+type alias Keys =
+    { x : Int
+    , y : Int
+    }
+
+
+type Arrow
+    = ArrowDown
+    | ArrowUp
+    | ArrowLeft
+    | ArrowRight
+
+
+type alias Window =
+    { width : Int
+    , height : Int
+    }
+
+
+type Mario
+    = Mario Action Direction
+
+
+type Action
+    = Running
+    | Walking
+    | Standing
+    | Ducking
+    | Jumping
+    | Falling
+
+
+type Direction
+    = Left
+    | Right
+
+
+type Msg
+    = Tick Time.Posix
+    | Frame Float
+    | Pressed Button
+    | Released Button
+    | WindowSize Int Int
+
+
+type Button
+    = GoLeft
+    | GoRight
+    | Duck
+    | Jump
+    | Run
+
+
+main : Program () Model Msg
 main =
     Browser.document
-        { init = init
+        { init =
+            \() ->
+                ( init
+                , Browser.Dom.getViewport
+                    |> Task.attempt
+                        (\viewportResult ->
+                            case viewportResult of
+                                Ok viewport ->
+                                    WindowSize
+                                        (round viewport.scene.width)
+                                        (round viewport.scene.height)
+
+                                Err err ->
+                                    WindowSize
+                                        (round 800)
+                                        (round 600)
+                        )
+                )
         , view = view
         , update = update
         , subscriptions = subscriptions
         }
 
 
-
----- TYPES ----
-
-
-type alias Model =
-    { slime : Maybe Slime
-    , timeSinceInteraction : Float
-    , currentHour : Int
-    , events : List Event
-    , today : ( Month, Int )
+init : Model
+init =
+    { x = 0
+    , y = 0
+    , vx = 0
+    , vy = 0
+    , window = { width = 800, height = 500 }
+    , gamepad =
+        { left = NotPressed
+        , right = NotPressed
+        , jump = NotPressed
+        , run = NotPressed
+        , duck = NotPressed
+        }
+    , mario = Animator.init (Mario Standing Right)
     }
-
-
-type Msg
-    = NoOp
-    | Tick Float
-    | SlimeClicked
-    | ClickedEgg
-    | ClickedFood
-    | NewSlime Slime
-    | SetToday ( Month, Int )
-    | SaveSlime
-
-
-type alias Event =
-    { month : Month
-    , day : Int
-    , image : String
-    }
-
-
-type alias Slime =
-    { state : State
-    , color : SlimeColor
-    , hunger : Float
-    , timeSincePlayedWith : Float
-    , birthday : Event
-    }
-
-
-type SlimeColor
-    = Blue
-    | Red
-    | Green
-    | Black
-    | White
-
-
-type State
-    = Alive { mood : Mood, action : Action }
-    | Dead
-
-
-type Mood
-    = Content
-    | Shocked
-    | Confused
-    | Happy
-    | Hungry
-    | Upset
-
-
-type Action
-    = Sitting
-    | Sleeping ( SleepState, Float )
-    | Eating ( EatState, Float )
-    | Jumping ( JumpState, Float )
-
-
-type SleepState
-    = Sleep1
-    | Sleep2
-
-
-type EatState
-    = Eat1
-    | Eat2
-    | Eat3
-    | Eat4
-
-
-type JumpState
-    = Jump1
-    | Jump2
-    | Jump3
-    | Jump4
-    | Jump5
-    | Jump6
-
-
-
----- INIT ----
-
-
-init : Value -> ( Model, Cmd Msg )
-init slime =
-    ( { slime = slimeDecoder slime
-      , timeSinceInteraction = 0
-      , currentHour = 0
-      , events =
-            [ { month = Dec, day = 2, image = "xmas" }
-            , { month = Jan, day = 1, image = "newyear" }
-            ]
-      , today = ( Jan, 0 )
-      }
-    , getToday |> Task.perform SetToday
-    )
-
-
-slimeDecoder : Value -> Maybe Slime
-slimeDecoder slime =
-    case Decode.decodeValue decodeSlime slime of
-        Ok s ->
-            Just s
-
-        Err _ ->
-            Nothing
-
-
-decodeSlime : Decoder Slime
-decodeSlime =
-    Decode.map5 Slime
-        (Decode.field "state" decodeState)
-        (Decode.field "color" decodeColor)
-        (Decode.field "hunger" Decode.float)
-        (Decode.field "timeSincePlayedWith" Decode.float)
-        (Decode.field "birthday" decodeEvent)
-
-
-decodeEvent : Decoder Event
-decodeEvent =
-    Decode.map3 Event
-        (Decode.field "month" decodeMonth)
-        (Decode.field "day" Decode.int)
-        (Decode.field "image" Decode.string)
-
-
-decodeMonth : Decoder Month
-decodeMonth =
-    Decode.string
-        |> Decode.andThen
-            (\str ->
-                case str of
-                    "Jan" ->
-                        Decode.succeed Jan
-
-                    "Feb" ->
-                        Decode.succeed Feb
-
-                    "Mar" ->
-                        Decode.succeed Mar
-
-                    "Apr" ->
-                        Decode.succeed Apr
-
-                    "May" ->
-                        Decode.succeed May
-
-                    "Jun" ->
-                        Decode.succeed Jun
-
-                    "Jul" ->
-                        Decode.succeed Jul
-
-                    "Aug" ->
-                        Decode.succeed Aug
-
-                    "Sep" ->
-                        Decode.succeed Sep
-
-                    "Oct" ->
-                        Decode.succeed Oct
-
-                    "Nov" ->
-                        Decode.succeed Nov
-
-                    "Dec" ->
-                        Decode.succeed Dec
-
-                    m ->
-                        Decode.fail <| "Unkown month: " ++ m
-            )
-
-
-decodeColor : Decoder SlimeColor
-decodeColor =
-    Decode.string
-        |> Decode.andThen
-            (\str ->
-                case str of
-                    "Red" ->
-                        Decode.succeed Red
-
-                    "Green" ->
-                        Decode.succeed Green
-
-                    "Blue" ->
-                        Decode.succeed Blue
-
-                    "Black" ->
-                        Decode.succeed Black
-
-                    "White" ->
-                        Decode.succeed White
-
-                    c ->
-                        Decode.fail <| "Unkown color: " ++ c
-            )
-
-
-decodeState : Decoder State
-decodeState =
-    Decode.oneOf
-        [ Decode.null Dead
-        , Decode.string
-            |> Decode.andThen
-                (\str ->
-                    case str of
-                        "Content" ->
-                            Decode.succeed <| Alive { mood = Content, action = Sitting }
-
-                        "Shocked" ->
-                            Decode.succeed <| Alive { mood = Shocked, action = Sitting }
-
-                        "Confused" ->
-                            Decode.succeed <| Alive { mood = Confused, action = Sitting }
-
-                        "Happy" ->
-                            Decode.succeed <| Alive { mood = Happy, action = Sitting }
-
-                        "Hungry" ->
-                            Decode.succeed <| Alive { mood = Hungry, action = Sitting }
-
-                        "Upset" ->
-                            Decode.succeed <| Alive { mood = Upset, action = Sitting }
-
-                        m ->
-                            Decode.fail <| "Unkown mood: " ++ m
-                )
-        ]
-
-
-getToday : Task.Task x ( Month, Int )
-getToday =
-    Task.map2
-        (\zone t -> ( Time.toMonth zone t, Time.toDay zone t ))
-        Time.here
-        Time.now
-
-
-
----- SUBSCRIPTIONS ----
-
-
-subscriptions : Model -> Sub Msg
-subscriptions _ =
-    Sub.batch
-        [ onAnimationFrameDelta Tick
-        , Time.every (minuteToMilli 1) (\_ -> SaveSlime)
-        ]
-
-
-port save : Value -> Cmd msg
-
-
-encodeSlime : Maybe Slime -> Value
-encodeSlime slime =
-    case slime of
-        Nothing ->
-            Encode.null
-
-        Just { state, color, hunger, timeSincePlayedWith, birthday } ->
-            Encode.object
-                [ ( "state", encodeState state )
-                , ( "color", encodeColor color )
-                , ( "hunger", Encode.float hunger )
-                , ( "timeSincePlayedWith", Encode.float timeSincePlayedWith )
-                , ( "birthday", encodeEvent birthday )
-                ]
-
-
-encodeEvent : Event -> Value
-encodeEvent { month, day, image } =
-    Encode.object
-        [ ( "month", encodeMonth month )
-        , ( "day", Encode.int day )
-        , ( "image", Encode.string image )
-        ]
-
-
-encodeMonth : Month -> Value
-encodeMonth month =
-    Encode.string <|
-        case month of
-            Jan ->
-                "Jan"
-
-            Feb ->
-                "Feb"
-
-            Mar ->
-                "Mar"
-
-            Apr ->
-                "Apr"
-
-            May ->
-                "May"
-
-            Jun ->
-                "Jun"
-
-            Jul ->
-                "Jul"
-
-            Aug ->
-                "Aug"
-
-            Sep ->
-                "Sep"
-
-            Oct ->
-                "Oct"
-
-            Nov ->
-                "Nov"
-
-            Dec ->
-                "Dec"
-
-
-encodeColor : SlimeColor -> Value
-encodeColor color =
-    Encode.string <|
-        case color of
-            Red ->
-                "Red"
-
-            Green ->
-                "Green"
-
-            Blue ->
-                "Blue"
-
-            Black ->
-                "Black"
-
-            White ->
-                "White"
-
-
-encodeState : State -> Value
-encodeState state =
-    case state of
-        Dead ->
-            Encode.null
-
-        Alive { mood } ->
-            encodeMood mood
-
-
-encodeMood : Mood -> Value
-encodeMood mood =
-    Encode.string <|
-        case mood of
-            Content ->
-                "Content"
-
-            Shocked ->
-                "Shocked"
-
-            Confused ->
-                "Confused"
-
-            Happy ->
-                "Happy"
-
-            Hungry ->
-                "Hungry"
-
-            Upset ->
-                "Upset"
-
-
-
----- UPDATE ----
 
 
 update : Msg -> Model -> ( Model, Cmd Msg )
-update msg ({ timeSinceInteraction } as model) =
+update msg mario =
     case msg of
-        NoOp ->
-            ( model, Cmd.none )
-
-        SaveSlime ->
-            ( model, model.slime |> encodeSlime |> save )
-
-        Tick delta ->
-            case model.slime of
-                Nothing ->
-                    ( model, Cmd.none )
-
-                Just slime ->
-                    ( { model
-                        | slime = Just <| slimeTick slime delta timeSinceInteraction
-                        , timeSinceInteraction = timeSinceInteraction + delta
-                      }
-                    , Cmd.none
-                    )
-
-        SlimeClicked ->
-            case model.slime of
-                Nothing ->
-                    ( model, Cmd.none )
-
-                Just slime ->
-                    ( { model | slime = Just <| slimeClicked slime, timeSinceInteraction = 0 }
-                    , Cmd.none
-                    )
-
-        ClickedEgg ->
-            ( model, Random.generate NewSlime <| newSlime model.today )
-
-        ClickedFood ->
-            case model.slime of
-                Nothing ->
-                    ( model, Cmd.none )
-
-                Just slime ->
-                    ( { model | slime = Just <| slimeFed slime, timeSinceInteraction = 0 }, Cmd.none )
-
-        NewSlime slime ->
-            ( { model | slime = Just slime, timeSinceInteraction = 0 }
-            , Task.perform (\_ -> SaveSlime) (Task.succeed ())
+        Tick newTime ->
+            ( mario
+                |> Animator.update newTime animator
+            , Cmd.none
             )
 
-        SetToday today ->
-            ( { model | today = today }
-            , Process.sleep (minuteToMilli 5)
-                |> Task.andThen (\_ -> getToday)
-                |> Task.perform SetToday
+        Frame dt ->
+            ( mario
+                |> holdButtons dt
+                |> gravity (dt / 10)
+                |> jump mario.gamepad
+                |> walk mario.gamepad
+                |> physics (dt / 10)
+                |> updateSprites
+            , Cmd.none
             )
 
+        Pressed button ->
+            ( { mario
+                | gamepad =
+                    applyButtonToGamepad button True mario.gamepad
+              }
+            , Cmd.none
+            )
 
-slimeFed : Slime -> Slime
-slimeFed slime =
-    let
-        nextHunger =
-            slime.hunger - hourToMilli 6
-    in
-    { slime
-        | hunger = nextHunger
-        , state =
-            case slime.state of
-                Dead ->
-                    Dead
+        Released button ->
+            ( { mario
+                | gamepad =
+                    applyButtonToGamepad button False mario.gamepad
+              }
+            , Cmd.none
+            )
 
-                Alive { mood, action } ->
-                    if nextHunger <= hourToMilli -24 then
-                        Dead
-
-                    else
-                        Alive
-                            { mood = mood
-                            , action =
-                                case action of
-                                    Sitting ->
-                                        Eating ( Eat1, 0 )
-
-                                    Sleeping _ ->
-                                        Eating ( Eat1, 0 )
-
-                                    other ->
-                                        other
-                            }
-    }
-
-
-newSlime : ( Month, Int ) -> Generator Slime
-newSlime ( month, day ) =
-    Random.weighted
-        ( 40, Blue )
-        [ ( 40, Red )
-        , ( 40, Green )
-        , ( 1, Black )
-        , ( 1, White )
-        ]
-        |> Random.andThen
-            (\color ->
-                Random.constant
-                    { state = Alive { mood = Content, action = Sitting }
-                    , color = color
-                    , hunger = 0
-                    , timeSincePlayedWith = 0
-                    , birthday =
-                        { month = month
-                        , day = day
-                        , image = "bday"
-                        }
+        WindowSize width height ->
+            ( { mario
+                | window =
+                    { width = width
+                    , height = height
                     }
+              }
+            , Cmd.none
             )
 
 
-slimeClicked : Slime -> Slime
-slimeClicked slime =
+{-| -}
+subscriptions : Model -> Sub Msg
+subscriptions model =
+    Sub.batch
+        [ animator
+            |> Animator.toSubscription Tick model
+        , Browser.Events.onResize WindowSize
+        , Browser.Events.onKeyDown (Decode.map Pressed decodeButton)
+        , Browser.Events.onKeyUp (Decode.map Released decodeButton)
+        , Browser.Events.onAnimationFrameDelta Frame
+        ]
+
+
+animator : Animator.Animator Model
+animator =
+    Animator.animator
+        -- we tell the animator how to get the checked timeline using .checked
+        -- and we tell the animator how to update that timeline with updateChecked
+        |> Animator.watching .mario (\mario m -> { m | mario = mario })
+
+
+decodeButton : Decode.Decoder Button
+decodeButton =
+    Decode.andThen toButton
+        (Decode.field "key" Decode.string)
+
+
+toButton : String -> Decode.Decoder Button
+toButton string =
+    case string of
+        "ArrowLeft" ->
+            Decode.succeed GoLeft
+
+        "ArrowRight" ->
+            Decode.succeed GoRight
+
+        " " ->
+            Decode.succeed Jump
+
+        "ArrowDown" ->
+            Decode.succeed Duck
+
+        "Shift" ->
+            Decode.succeed Run
+
+        _ ->
+            Decode.fail "Skip"
+
+
+holdButtons : Float -> Model -> Model
+holdButtons dt model =
     let
-        nextState =
-            case slime.state of
-                Dead ->
-                    Dead
-
-                Alive { mood, action } ->
-                    Alive
-                        { mood = mood
-                        , action =
-                            case action of
-                                Sitting ->
-                                    Jumping ( Jump1, 0 )
-
-                                Sleeping _ ->
-                                    Jumping ( Jump1, 0 )
-
-                                other ->
-                                    other
-                        }
+        gamepad =
+            model.gamepad
     in
-    { slime | state = nextState, timeSincePlayedWith = 0 }
-
-
-slimeTick : Slime -> Float -> Float -> Slime
-slimeTick slime delta timeSinceInteraction =
-    let
-        nextTimeSincePlayedWith =
-            slime.timeSincePlayedWith + delta
-
-        hungerTickRate =
-            case slime.state of
-                Dead ->
-                    0
-
-                Alive { action } ->
-                    case action of
-                        Sleeping _ ->
-                            0.1
-
-                        Jumping _ ->
-                            2
-
-                        Sitting ->
-                            1
-
-                        Eating _ ->
-                            0
-
-        nextHunger =
-            slime.hunger + delta * hungerTickRate
-
-        nextMood =
-            if nextHunger >= hourToMilli 24 then
-                Hungry
-
-            else if nextHunger <= hourToMilli -12 then
-                Upset
-
-            else if nextHunger < hourToMilli 6 && nextTimeSincePlayedWith <= minuteToMilli 5 then
-                Happy
-
-            else
-                Content
-
-        nextState =
-            case slime.state of
-                Dead ->
-                    Dead
-
-                Alive { action } ->
-                    if nextHunger >= hourToMilli 48 then
-                        Dead
-
-                    else
-                        Alive
-                            { mood = nextMood
-                            , action =
-                                case action of
-                                    Sitting ->
-                                        case nextMood of
-                                            Upset ->
-                                                Sitting
-
-                                            Hungry ->
-                                                Sitting
-
-                                            _ ->
-                                                if timeSinceInteraction >= (10 * 60000) then
-                                                    -- 5 min since the last time the slime was played with
-                                                    Sleeping ( Sleep1, 0 )
-
-                                                else
-                                                    Sitting
-
-                                    Sleeping ( state, time ) ->
-                                        case nextMood of
-                                            Upset ->
-                                                Sitting
-
-                                            Hungry ->
-                                                Sitting
-
-                                            _ ->
-                                                let
-                                                    newTime =
-                                                        time + delta
-                                                in
-                                                if newTime > sleepTickTime then
-                                                    case state of
-                                                        Sleep1 ->
-                                                            Sleeping ( Sleep2, newTime - sleepTickTime )
-
-                                                        Sleep2 ->
-                                                            Sleeping ( Sleep1, newTime - sleepTickTime )
-
-                                                else
-                                                    Sleeping ( state, newTime )
-
-                                    Eating ( state, time ) ->
-                                        let
-                                            newTime =
-                                                time + delta
-                                        in
-                                        if newTime > eatTickTime then
-                                            case state of
-                                                Eat1 ->
-                                                    Eating ( Eat2, newTime - eatTickTime )
-
-                                                Eat2 ->
-                                                    Eating ( Eat3, newTime - eatTickTime )
-
-                                                Eat3 ->
-                                                    Eating ( Eat4, newTime - eatTickTime )
-
-                                                Eat4 ->
-                                                    Sitting
-
-                                        else
-                                            Eating ( state, newTime )
-
-                                    Jumping ( state, time ) ->
-                                        let
-                                            newTime =
-                                                time + delta
-                                        in
-                                        if newTime > jumpTickTime then
-                                            case state of
-                                                Jump1 ->
-                                                    Jumping ( Jump2, newTime - jumpTickTime )
-
-                                                Jump2 ->
-                                                    Jumping ( Jump3, newTime - jumpTickTime )
-
-                                                Jump3 ->
-                                                    Jumping ( Jump4, newTime - jumpTickTime )
-
-                                                Jump4 ->
-                                                    Jumping ( Jump5, newTime - jumpTickTime )
-
-                                                Jump5 ->
-                                                    Jumping ( Jump6, newTime - jumpTickTime )
-
-                                                Jump6 ->
-                                                    Sitting
-
-                                        else
-                                            Jumping ( state, newTime )
-                            }
-    in
-    { slime | state = nextState, hunger = nextHunger, timeSincePlayedWith = nextTimeSincePlayedWith }
-
-
-sleepTickTime : Float
-sleepTickTime =
-    1000
-
-
-eatTickTime : Float
-eatTickTime =
-    250
-
-
-jumpTickTime : Float
-jumpTickTime =
-    100
-
-
-hourToMilli : Float -> Float
-hourToMilli =
-    (*) 3600000
-
-
-minuteToMilli : Float -> Float
-minuteToMilli =
-    (*) 60000
-
-
-
----- VIEW ----
-
-
-view : Model -> Document Msg
-view model =
-    { title = "Slime Buddy"
-    , body =
-        [ toUnstyled <| viewGame model ]
+    { model
+        | gamepad = holdButtonsOnGamepad dt gamepad
     }
 
 
-viewGame : Model -> Html Msg
-viewGame ({ events, today } as model) =
-    let
-        ( month, day ) =
-            today
+holdButtonsOnGamepad dt gamepad =
+    { left = hold dt gamepad.left
+    , right = hold dt gamepad.right
+    , jump = hold dt gamepad.jump
+    , run = hold dt gamepad.run
+    , duck = hold dt gamepad.duck
+    }
 
-        todaysEvent =
-            case model.slime of
-                Nothing ->
-                    ""
 
-                Just { birthday } ->
-                    if birthday.month == month && birthday.day == day then
-                        birthday.image
+hold dt pressed =
+    case pressed of
+        NotPressed ->
+            NotPressed
+
+        StartPressed ->
+            HeldFor dt
+
+        HeldFor existingDt ->
+            HeldFor (existingDt + dt)
+
+
+applyButtonToGamepad : Button -> Bool -> GamePad -> GamePad
+applyButtonToGamepad button pressed gamepad =
+    case button of
+        GoLeft ->
+            { gamepad
+                | left =
+                    if pressed then
+                        StartPressed
 
                     else
-                        events
-                            |> List.filter (\event -> event.month == month && event.day == day)
-                            |> List.head
-                            |> Maybe.withDefault { month = Jan, day = -1, image = "" }
-                            |> .image
-    in
-    Html.div
-        [ Attrs.css
-            [ Css.position Css.absolute
-            , Css.top <| Css.px 0
-            , Css.bottom <| Css.px 0
-            , Css.left <| Css.px 0
-            , Css.right <| Css.px 0
-            , Css.backgroundColor <| Css.rgb 49 49 49
+                        NotPressed
+            }
+
+        GoRight ->
+            { gamepad
+                | right =
+                    if pressed then
+                        StartPressed
+
+                    else
+                        NotPressed
+            }
+
+        Duck ->
+            { gamepad
+                | duck =
+                    if pressed then
+                        StartPressed
+
+                    else
+                        NotPressed
+            }
+
+        Jump ->
+            { gamepad
+                | jump =
+                    if pressed then
+                        StartPressed
+
+                    else
+                        NotPressed
+            }
+
+        Run ->
+            { gamepad
+                | run =
+                    if pressed then
+                        StartPressed
+
+                    else
+                        NotPressed
+            }
+
+
+view : Model -> Browser.Document Msg
+view model =
+    { title = "Mario - Elm Animator"
+    , body =
+        [ stylesheet
+        , Html.div
+            [ Attr.style "position" "fixed"
+            , Attr.style "left" "0"
+            , Attr.style "top" "0"
+            , Attr.style "width" (String.fromInt model.window.width ++ "px")
+            , Attr.style "height" (String.fromInt model.window.height ++ "px")
             ]
-        ]
-        [ Html.div
-            [ Attrs.css
-                [ Css.property "user-select" "none"
-                , Css.width <| Css.px 128
-                , Css.height <| Css.px 158
-                , Css.position Css.absolute
-                , Css.top <| Css.pct 50
-                , Css.left <| Css.pct 50
-                , Css.transform <| Css.translate2 (Css.pct -50) (Css.pct -50)
+            [ Html.div
+                [ Attr.style "position" "absolute"
+                , Attr.style "top" "80px"
+                , Attr.style "left" "80px"
+                , Attr.style "user-select" "none"
+                , Attr.style "font-family" "'Roboto', sans-serif"
+                ]
+                [ Html.h1 [] [ Html.text "Mario" ]
+                , Html.div [] [ Html.text "Arrows to move, shift to run, space to jump!" ]
+                ]
+            , Html.div
+                [ Attr.class "positioner"
+                , Attr.style "position" "absolute"
+                , Attr.style "top" (String.fromFloat ((toFloat model.window.height / 2) - model.y) ++ "px")
+                , Attr.style "left" (String.fromFloat model.x ++ "px")
+                ]
+                -- (2) - Animating Mario's state with sprites
+                --      We're watching te model.mario timeline, which has both a direction and an action that mario is currently doing.
+                --
+                [ viewSprite
+                    (Animator.step model.mario <|
+                        \(Mario action direction) ->
+                            let
+                                -- this is where we decide to show the left or the right sprite.
+                                --
+                                frame mySprite =
+                                    case direction of
+                                        Left ->
+                                            Animator.frame { mySprite | flipX = True }
+
+                                        Right ->
+                                            Animator.frame mySprite
+                            in
+                            case action of
+                                -- for these first three states, we only have a single frame we care about.
+                                Standing ->
+                                    frame sprite.tail.stand
+
+                                Ducking ->
+                                    frame sprite.tail.duck
+
+                                Jumping ->
+                                    frame sprite.tail.jump
+
+                                Falling ->
+                                    frame sprite.tail.fall
+
+                                Walking ->
+                                    -- when we're in a `Walking` state, we want to cycle through 3 frames.
+                                    -- And we can also specify our frames per secton
+                                    Animator.framesWith
+                                        -- `transition` are the frames we'd want to take when transitioning to this state.
+                                        { transition = frame sprite.tail.stand
+
+                                        -- `resting` is what we want to do while we're in this state.
+                                        , resting =
+                                            Animator.cycle
+                                                (Animator.fps 15)
+                                                [ frame sprite.tail.step1
+                                                , frame sprite.tail.stand
+                                                ]
+                                        }
+
+                                Running ->
+                                    -- In order to make mario go faster, we're upping the fps
+                                    -- and we're also changing the frames so that he puts his arms out.
+                                    Animator.framesWith
+                                        { transition = frame sprite.tail.standArms
+                                        , resting =
+                                            Animator.cycle
+                                                (Animator.fps 30)
+                                                [ frame sprite.tail.runStep1
+                                                , frame sprite.tail.runStep2
+                                                , frame sprite.tail.standArms
+                                                ]
+                                        }
+                    )
                 ]
             ]
-            [ viewBackground
-            , viewBackgroundImage
-            , viewBackgroundSpecial todaysEvent
-            , case model.slime of
-                Nothing ->
-                    Html.text ""
-
-                Just slime ->
-                    viewSlime slime
-            , viewSlimeTheme model todaysEvent
-            , viewSlimeClickArea
-            , viewSun
-            , viewActions model.slime
-
-            -- Dev text
-            -- , Html.div
-            --     [ Attrs.css
-            --         [ Css.position Css.absolute
-            --         , Css.top <| Css.px 90
-            --         , Css.left <| Css.px 0
-            --         ]
-            --     ]
-            --     [ Html.text <| toString ((Maybe.withDefault { state = Alive { mood = Content, action = Sitting }
-            --             , color = Blue
-            --             , hunger = 0
-            --             , timeSincePlayedWith = 0
-            --             , birthday =
-            --                 { month = Jan
-            --                 , day = 22
-            --                 , image = "carl"
-            --                 }
-            --             } model.slime) |> .birthday) ]
-            ]
         ]
-
-
-viewActions : Maybe Slime -> Html Msg
-viewActions slime =
-    Html.div
-        [ Attrs.css
-            [ Css.position Css.absolute
-            , Css.bottom <| Css.px 0
-            , Css.left <| Css.px 0
-            , Css.height <| Css.px 32
-            , Css.width <| Css.px 128
-            , Css.backgroundColor <| Css.rgb 97 61 47
-            ]
-        ]
-        [ viewEggButton slime
-        , viewFoodButton slime
-        ]
-
-
-viewFoodButton : Maybe Slime -> Html Msg
-viewFoodButton slime =
-    pictureButton
-        { onClick =
-            Maybe.andThen
-                (\{ state } ->
-                    case state of
-                        Dead ->
-                            Nothing
-
-                        Alive { action } ->
-                            case action of
-                                Sitting ->
-                                    Just ClickedFood
-
-                                Sleeping _ ->
-                                    Just ClickedFood
-
-                                _ ->
-                                    Nothing
-                )
-                slime
-        , imageUri = "./assets/buttons/feed_large.png"
-        , offset = 32
-        , label = "Feed Slime"
-        }
-
-
-viewEggButton : Maybe Slime -> Html Msg
-viewEggButton slime =
-    pictureButton
-        { onClick =
-            case slime of
-                Nothing ->
-                    Just ClickedEgg
-
-                Just { state } ->
-                    case state of
-                        Dead ->
-                            Just ClickedEgg
-
-                        Alive _ ->
-                            Nothing
-        , imageUri = "./assets/buttons/new_large.png"
-        , offset = 0
-        , label = "New Slime"
-        }
-
-
-pictureButton :
-    { onClick : Maybe msg
-    , imageUri : String
-    , offset : Float
-    , label : String
     }
-    -> Html msg
-pictureButton { onClick, imageUri, offset, label } =
-    Html.button
-        [ Attrs.css
-            [ Css.position Css.absolute
-            , Css.height <| Css.px 32
-            , Css.width <| Css.px 32
-            , Css.bottom <| Css.px 0
-            , Css.right <| Css.px offset
-            , Css.cursor <|
-                case onClick of
-                    Just _ ->
-                        Css.pointer
 
-                    Nothing ->
-                        Css.notAllowed
-            , Css.opacity <|
-                Css.num <|
-                    case onClick of
-                        Just _ ->
-                            1
 
-                        Nothing ->
-                            0.5
-            , Css.borderStyle Css.none
-            , Css.backgroundColor (Css.rgba 0 0 0 0)
-            , Css.backgroundImage (Css.url imageUri)
-            , Css.backgroundSize (Css.px 32)
+viewSprite : Box -> Html msg
+viewSprite box =
+    Html.div []
+        [ Html.div
+            [ Attr.style "position" "absolute"
+            , Attr.style "top" (String.fromInt box.adjustY ++ "px")
+            , Attr.style "left" (String.fromInt box.adjustX ++ "px")
+            , Attr.style "width" (String.fromInt box.width ++ "px")
+            , Attr.style "height" (String.fromInt box.height ++ "px")
+            , Attr.style "background-image" "url('assets/slime/slime-sprites.png')"
+            , Attr.style "background-repeat" "no-repeat"
+            , Attr.style "transform-origin" "30% 50%"
+            , Attr.style "transform"
+                (if box.flipX then
+                    "scaleX(-1) scale(2)"
+
+                 else
+                    "scaleX(1) scale(2)"
+                )
+            , Attr.style "background-position"
+                ("-"
+                    ++ (String.fromInt box.x ++ "px -")
+                    ++ (String.fromInt box.y ++ "px")
+                )
+
+            -- we need to tell the browser to render our image and leave the pixels pixelated.
+            , Attr.class "pixel-art"
             ]
-        , Attrs.attribute "aria-label" label
-        , case onClick of
-            Nothing ->
-                Attrs.disabled True
-
-            Just handler ->
-                Events.onClick handler
+            []
         ]
-        []
 
 
-viewSlimeClickArea : Html Msg
-viewSlimeClickArea =
-    Html.div
-        [ Attrs.css
-            [ Css.position Css.absolute
-            , Css.height <| Css.px 22
-            , Css.width <| Css.px 35
-            , Css.bottom <| Css.px 35
-            , Css.left <| Css.px 29
-            , Css.cursor Css.pointer
-            ]
-        , Events.onClick SlimeClicked
-        ]
-        []
+isHeld : Pressed -> Bool
+isHeld pressed =
+    case pressed of
+        NotPressed ->
+            False
+
+        StartPressed ->
+            True
+
+        HeldFor _ ->
+            True
 
 
-viewBackgroundSpecial : String -> Html Msg
-viewBackgroundSpecial theme =
-    Html.div
-        [ Attrs.css
-            [ Css.width <| Css.px 128
-            , Css.height <| Css.px 128
-            , Css.position Css.absolute
-            , Css.bottom <| Css.px 32
-            , Css.left <| Css.px 0
-            , Css.backgroundSize <| Css.px 128
-            , Css.backgroundRepeat Css.noRepeat
-            , Css.backgroundImage <| Css.url ("./assets/ground/" ++ theme ++ ".png")
-            ]
-        ]
-        []
-
-
-viewBackground : Html Msg
-viewBackground =
-    Html.div
-        [ Attrs.css
-            [ Css.width <| Css.px 128
-            , Css.height <| Css.px 128
-            , Css.backgroundImage <|
-                Css.linearGradient2
-                    Css.toBottomRight
-                    (Css.stop <| Css.rgba 255 255 255 0.85)
-                    (Css.stop <| Css.rgba 65 251 255 0.85)
-                    []
-            ]
-        , Attrs.style "-webkit-app-region" "drag"
-        ]
-        []
-
-
-viewBackgroundImage : Html Msg
-viewBackgroundImage =
-    Html.div
-        [ Attrs.css
-            [ Css.width <| Css.px 128
-            , Css.height <| Css.px 128
-            , Css.marginTop <| Css.px -128
-            , Css.backgroundSize <| Css.px 128
-            , Css.backgroundRepeat Css.noRepeat
-            , Css.backgroundImage <| Css.url "./assets/ground/default.png"
-            ]
-        ]
-        []
-
-
-viewSlime : Slime -> Html Msg
-viewSlime slime =
+walk : GamePad -> Model -> Model
+walk pad mario =
     let
-        slimeColor =
-            case slime.color of
-                Blue ->
-                    "blue"
+        run yes x =
+            if yes then
+                x * 2.0
 
-                Red ->
-                    "red"
+            else
+                x
 
-                Green ->
-                    "green"
+        newVx =
+            if isHeld pad.left && isHeld pad.right then
+                0
 
-                Black ->
-                    "black"
+            else if isHeld pad.left then
+                run (isHeld pad.run) -1.8
 
-                White ->
-                    "white"
+            else if isHeld pad.right then
+                run (isHeld pad.run) 1.8
+
+            else
+                0
     in
-    Html.div
-        [ Attrs.css
-            [ Css.width <| Css.px 128
-            , Css.height <| Css.px 128
-            , Css.marginTop <| Css.px -128
-            , Css.backgroundImage <| Css.url ("./assets/slime/colors/" ++ slimeColor ++ ".png")
-            , Css.backgroundSize <| Css.px (128 * 16)
-            , Css.animationName <|
-                Anims.keyframes
-                    [ ( 0, [ Anims.property "background-position" "-512px -256px" ] )
-                    , ( 100, [ Anims.property "background-position" "-640px -256px" ] )
-                    ]
-            , case slime.state of
-                Dead ->
-                    viewSlimeDead
+    { mario
+        | vx = newVx
+    }
 
-                Alive { mood, action } ->
-                    case action of
-                        Sitting ->
-                            case mood of
-                                Content ->
-                                    viewSlimeContent
 
-                                Shocked ->
-                                    viewSlimeShocked
+jumpForce : Float
+jumpForce =
+    6.0
 
-                                Confused ->
-                                    viewSlimeConfused
 
-                                Happy ->
-                                    viewSlimeHappy
+jump : GamePad -> Model -> Model
+jump pad mario =
+    if pad.jump == StartPressed && mario.vy == 0 then
+        { mario | vy = jumpForce }
 
-                                Hungry ->
-                                    viewSlimeHungry
+    else
+        mario
 
-                                Upset ->
-                                    viewSlimeUpset
 
-                        Sleeping ( state, _ ) ->
-                            case state of
-                                Sleep1 ->
-                                    viewSlimeSleep1
+gravity : Float -> Model -> Model
+gravity dt mario =
+    { mario
+        | vy =
+            if mario.y > 0 then
+                mario.vy - dt / 4
 
-                                Sleep2 ->
-                                    viewSlimeSleep2
+            else
+                0
+    }
 
-                        Eating ( state, _ ) ->
-                            case state of
-                                Eat1 ->
-                                    viewSlimeEat1
 
-                                Eat2 ->
-                                    viewSlimeEat2
+physics : Float -> Model -> Model
+physics dt mario =
+    { mario
+        | x =
+            (mario.x + dt * mario.vx)
+                |> min (toFloat mario.window.width - 40)
+                |> max 0
+        , y = max 0 (mario.y + dt * mario.vy)
+    }
 
-                                Eat3 ->
-                                    viewSlimeEat1
 
-                                Eat4 ->
-                                    viewSlimeEat2
+updateSprites : Model -> Model
+updateSprites model =
+    let
+        current =
+            Animator.current model.mario
 
-                        Jumping ( state, _ ) ->
-                            case state of
-                                Jump1 ->
-                                    viewSlimeJump1
+        direction =
+            if model.vx > 0 then
+                Right
 
-                                Jump2 ->
-                                    viewSlimeJump2
+            else if model.vx < 0 then
+                Left
 
-                                Jump3 ->
-                                    viewSlimeJump3
+            else
+                case current of
+                    Mario _ currentDirection ->
+                        currentDirection
 
-                                Jump4 ->
-                                    viewSlimeJump4
+        action =
+            if model.y /= 0 then
+                if model.vy > 0 then
+                    Jumping
 
-                                Jump5 ->
-                                    viewSlimeJump5
+                else
+                    Falling
 
-                                Jump6 ->
-                                    viewSlimeJump6
-            ]
-        ]
+            else if model.vx /= 0 then
+                if abs model.vx > 2 then
+                    Running
+
+                else
+                    Walking
+
+            else if isHeld model.gamepad.duck then
+                Ducking
+
+            else
+                Standing
+
+        newMario =
+            Mario action direction
+    in
+    if current /= newMario then
+        { model
+            | mario =
+                model.mario
+                    |> Animator.go Animator.immediately newMario
+        }
+
+    else
+        model
+
+
+roughlyEqual : Float -> Float -> Float -> Bool
+roughlyEqual margin a b =
+    a + margin >= b && a - margin <= b
+
+
+
+{- (1) - Sprite Sheet
+   x, y -> the coordinates of the image on the sprite sheet
+   width, height -> the size of the image I want
+   adjustX, adjustY -> adjustX and adjustY move the position of the rendered image so that we can line it up with the previous frames.
+   flipX, flipY ->  The sprite sheet only shows mario looking in one direction.  Though we can flip that image if we need to!
+-}
+
+
+type alias Box =
+    { x : Int
+    , y : Int
+    , width : Int
+    , height : Int
+    , adjustX : Int
+    , adjustY : Int
+    , flipX : Bool
+    , flipY : Bool
+    }
+
+
+sprite =
+    { tail =
+        { stand =
+            { x = 0
+            , y = 0
+            , width = 16
+            , height = 16
+            , adjustX = 0
+            , adjustY = 0
+            , flipX = False
+            , flipY = False
+            }
+        , step1 =
+            { x = 16
+            , y = 0
+            , width = 16
+            , height = 16
+            , adjustX = 0
+            , adjustY = 0
+            , flipX = False
+            , flipY = False
+            }
+        , jump =
+            { x = 0
+            , y = 16
+            , width = 16
+            , height = 16
+            , adjustX = 0
+            , adjustY = 0
+            , flipX = False
+            , flipY = False
+            }
+        , fall =
+            { x = 16
+            , y = 16
+            , width = 16
+            , height = 16
+            , adjustX = 0
+            , adjustY = 0
+            , flipX = False
+            , flipY = False
+            }
+
+        --
+        --
+        --
+        --
+        --
+        , duck =
+            { x = 120
+            , y = 235
+            , width = 27
+            , height = 30
+            , adjustX = 5
+            , adjustY = 0
+            , flipX = False
+            , flipY = False
+            }
+        , pivot =
+            { x = 150
+            , y = 240
+            , width = 27
+            , height = 30
+            , adjustX = 0
+            , adjustY = 0
+            , flipX = False
+            , flipY = False
+            }
+        , kick =
+            { x = 180
+            , y = 240
+            , width = 27
+            , height = 30
+            , adjustX = -1
+            , adjustY = 0
+            , flipX = False
+            , flipY = False
+            }
+        , bum =
+            { x = 208
+            , y = 239
+            , width = 20
+            , height = 30
+            , adjustX = 3
+            , adjustY = 0
+            , flipX = False
+            , flipY = False
+            }
+        , standArms =
+            { x = 0
+            , y = 280
+            , width = 25
+            , height = 30
+            , adjustX = 4
+            , adjustY = 0
+            , flipX = False
+            , flipY = False
+            }
+        , runStep1 =
+            { x = 25
+            , y = 280
+            , width = 27
+            , height = 30
+            , adjustX = 3
+            , adjustY = 0
+            , flipX = False
+            , flipY = False
+            }
+        , runStep2 =
+            { x = 52
+            , y = 280
+            , width = 25
+            , height = 30
+            , adjustX = 4
+            , adjustY = 0
+            , flipX = False
+            , flipY = False
+            }
+        , runJump1 =
+            { x = 329
+            , y = 280
+            , width = 27
+            , height = 30
+            , adjustX = 3
+            , adjustY = 0
+            , flipX = False
+            , flipY = False
+            }
+        , runJump2 =
+            { x = 359
+            , y = 280
+            , width = 27
+            , height = 30
+            , adjustX = 3
+            , adjustY = 0
+            , flipX = False
+            , flipY = False
+            }
+        , runJump3 =
+            { x = 389
+            , y = 280
+            , width = 27
+            , height = 30
+            , adjustX = 3
+            , adjustY = 0
+            , flipX = False
+            , flipY = False
+            }
+        }
+    }
+
+
+stylesheet : Html msg
+stylesheet =
+    Html.node "style"
         []
-
-
-viewSlimeContent : Style
-viewSlimeContent =
-    Css.backgroundPosition2 (Css.px 0) (Css.px 0)
-
-
-viewSlimeShocked : Style
-viewSlimeShocked =
-    Css.backgroundPosition2 (Css.px 0) (Css.px -128)
-
-
-viewSlimeConfused : Style
-viewSlimeConfused =
-    Css.backgroundPosition2 (Css.px -128) (Css.px -128)
-
-
-viewSlimeHappy : Style
-viewSlimeHappy =
-    Css.backgroundPosition2 (Css.px -256) (Css.px -128)
-
-
-viewSlimeDead : Style
-viewSlimeDead =
-    Css.backgroundPosition2 (Css.px -384) (Css.px -128)
-
-
-viewSlimeHungry : Style
-viewSlimeHungry =
-    Css.backgroundPosition2 (Css.px -512) (Css.px -128)
-
-
-viewSlimeUpset : Style
-viewSlimeUpset =
-    Css.backgroundPosition2 (Css.px -640) (Css.px -128)
-
-
-viewSlimeEat1 : Style
-viewSlimeEat1 =
-    Css.backgroundPosition2 (Css.px 0) (Css.px -256)
-
-
-viewSlimeEat2 : Style
-viewSlimeEat2 =
-    Css.backgroundPosition2 (Css.px -128) (Css.px -256)
-
-
-viewSlimeSleep1 : Style
-viewSlimeSleep1 =
-    Css.backgroundPosition2 (Css.px -512) (Css.px -256)
-
-
-viewSlimeSleep2 : Style
-viewSlimeSleep2 =
-    Css.backgroundPosition2 (Css.px -640) (Css.px -256)
-
-
-viewSlimeJump1 : Style
-viewSlimeJump1 =
-    Css.backgroundPosition2 (Css.px 0) (Css.px -384)
-
-
-viewSlimeJump2 : Style
-viewSlimeJump2 =
-    Css.backgroundPosition2 (Css.px -128) (Css.px -384)
-
-
-viewSlimeJump3 : Style
-viewSlimeJump3 =
-    Css.backgroundPosition2 (Css.px -256) (Css.px -384)
-
-
-viewSlimeJump4 : Style
-viewSlimeJump4 =
-    Css.backgroundPosition2 (Css.px -384) (Css.px -384)
-
-
-viewSlimeJump5 : Style
-viewSlimeJump5 =
-    Css.backgroundPosition2 (Css.px -512) (Css.px -384)
-
-
-viewSlimeJump6 : Style
-viewSlimeJump6 =
-    Css.backgroundPosition2 (Css.px -640) (Css.px -384)
-
-
-viewSlimeTheme : Model -> String -> Html Msg
-viewSlimeTheme model theme =
-    Html.div
-        [ Attrs.css
-            [ Css.width <| Css.px 128
-            , Css.height <| Css.px 128
-            , Css.position Css.absolute
-            , Css.bottom <| Css.px 32
-            , Css.left <| Css.px 0
-            , Css.backgroundImage <| Css.url ("./assets/slime/costumes/" ++ theme ++ ".png")
-            , Css.backgroundSize <| Css.px (128 * 16)
-            , Css.animationName <|
-                Anims.keyframes
-                    [ ( 0, [ Anims.property "background-position" "-512px -256px" ] )
-                    , ( 100, [ Anims.property "background-position" "-640px -256px" ] )
-                    ]
-            , case model.slime of
-                Nothing ->
-                    Css.property "" ""
-
-                Just slime ->
-                    case slime.state of
-                        Dead ->
-                            viewSlimeDead
-
-                        Alive { mood, action } ->
-                            case action of
-                                Sitting ->
-                                    case mood of
-                                        Content ->
-                                            viewSlimeContent
-
-                                        Shocked ->
-                                            viewSlimeShocked
-
-                                        Confused ->
-                                            viewSlimeConfused
-
-                                        Happy ->
-                                            viewSlimeHappy
-
-                                        Hungry ->
-                                            viewSlimeHungry
-
-                                        Upset ->
-                                            viewSlimeUpset
-
-                                Sleeping ( state, _ ) ->
-                                    case state of
-                                        Sleep1 ->
-                                            viewSlimeSleep1
-
-                                        Sleep2 ->
-                                            viewSlimeSleep2
-
-                                Eating ( state, _ ) ->
-                                    case state of
-                                        Eat1 ->
-                                            viewSlimeEat1
-
-                                        Eat2 ->
-                                            viewSlimeEat2
-
-                                        Eat3 ->
-                                            viewSlimeEat1
-
-                                        Eat4 ->
-                                            viewSlimeEat2
-
-                                Jumping ( state, _ ) ->
-                                    case state of
-                                        Jump1 ->
-                                            viewSlimeJump1
-
-                                        Jump2 ->
-                                            viewSlimeJump2
-
-                                        Jump3 ->
-                                            viewSlimeJump3
-
-                                        Jump4 ->
-                                            viewSlimeJump4
-
-                                        Jump5 ->
-                                            viewSlimeJump5
-
-                                        Jump6 ->
-                                            viewSlimeJump6
-            ]
+        [ Html.text """
+body,
+html {
+    margin: 0;
+    padding:0;
+    border:0;
+    display:block;
+    position: relative;
+    width: 100%;
+    height: 100%;
+}
+.pixel-art {
+    image-rendering: pixelated;
+    image-rendering: -moz-crisp-edges;
+    image-rendering: crisp-edges;
+}
+"""
         ]
-        []
-
-
-viewSun : Html Msg
-viewSun =
-    Html.div
-        [ Attrs.css
-            [ Css.backgroundColor <| Css.rgb 232 230 36
-            , Css.borderBottomRightRadius <| Css.px 20
-            , Css.width <| Css.px 20
-            , Css.height <| Css.px 20
-            , Css.position Css.absolute
-            , Css.top <| Css.px 0
-            , Css.left <| Css.px 0
-            ]
-        ]
-        []
