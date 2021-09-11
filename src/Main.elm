@@ -18,6 +18,7 @@ type alias Model =
     , y : Float
     , vx : Float
     , vy : Float
+    , isGrounded : Bool
     , window : Window
     , gamepad : GamePad
     , mario : Animator.Timeline Mario
@@ -43,19 +44,6 @@ type alias Milliseconds =
     Float
 
 
-type alias Keys =
-    { x : Int
-    , y : Int
-    }
-
-
-type Arrow
-    = ArrowDown
-    | ArrowUp
-    | ArrowLeft
-    | ArrowRight
-
-
 type alias Window =
     { width : Int
     , height : Int
@@ -71,8 +59,6 @@ type Action
     | Walking
     | Standing
     | Ducking
-    | Jumping
-    | Falling
 
 
 type Direction
@@ -99,46 +85,45 @@ type Button
 main : Program () Model Msg
 main =
     Browser.document
-        { init =
-            \() ->
-                ( init
-                , Browser.Dom.getViewport
-                    |> Task.attempt
-                        (\viewportResult ->
-                            case viewportResult of
-                                Ok viewport ->
-                                    WindowSize
-                                        (round viewport.scene.width)
-                                        (round viewport.scene.height)
-
-                                Err err ->
-                                    WindowSize
-                                        (round 800)
-                                        (round 600)
-                        )
-                )
+        { init = init
         , view = view
         , update = update
         , subscriptions = subscriptions
         }
 
 
-init : Model
-init =
-    { x = 0
-    , y = 0
-    , vx = 0
-    , vy = 0
-    , window = { width = 800, height = 500 }
-    , gamepad =
-        { left = NotPressed
-        , right = NotPressed
-        , jump = NotPressed
-        , run = NotPressed
-        , duck = NotPressed
-        }
-    , mario = Animator.init (Mario Standing Right)
-    }
+init : () -> ( Model, Cmd Msg )
+init () =
+    ( { x = 0
+      , y = 0
+      , vx = 0
+      , vy = 0
+      , isGrounded = True
+      , window = { width = 800, height = 600 }
+      , gamepad =
+            { left = NotPressed
+            , right = NotPressed
+            , jump = NotPressed
+            , run = NotPressed
+            , duck = NotPressed
+            }
+      , mario = Animator.init (Mario Standing Right)
+      }
+    , Browser.Dom.getViewport
+        |> Task.attempt
+            (\viewportResult ->
+                case viewportResult of
+                    Ok viewport ->
+                        WindowSize
+                            (round viewport.scene.width)
+                            (round viewport.scene.height)
+
+                    Err _ ->
+                        WindowSize
+                            (round 800)
+                            (round 600)
+            )
+    )
 
 
 update : Msg -> Model -> ( Model, Cmd Msg )
@@ -221,13 +206,22 @@ toButton string =
         "ArrowLeft" ->
             Decode.succeed GoLeft
 
+        "a" ->
+            Decode.succeed GoLeft
+
         "ArrowRight" ->
+            Decode.succeed GoRight
+
+        "d" ->
             Decode.succeed GoRight
 
         " " ->
             Decode.succeed Jump
 
         "ArrowDown" ->
+            Decode.succeed Duck
+
+        "s" ->
             Decode.succeed Duck
 
         "Shift" ->
@@ -243,11 +237,10 @@ holdButtons dt model =
         gamepad =
             model.gamepad
     in
-    { model
-        | gamepad = holdButtonsOnGamepad dt gamepad
-    }
+    { model | gamepad = holdButtonsOnGamepad dt gamepad }
 
 
+holdButtonsOnGamepad : Milliseconds -> GamePad -> GamePad
 holdButtonsOnGamepad dt gamepad =
     { left = hold dt gamepad.left
     , right = hold dt gamepad.right
@@ -257,6 +250,7 @@ holdButtonsOnGamepad dt gamepad =
     }
 
 
+hold : Milliseconds -> Pressed -> Pressed
 hold dt pressed =
     case pressed of
         NotPressed ->
@@ -368,49 +362,59 @@ view model =
                                         Right ->
                                             Animator.frame mySprite
                             in
-                            case action of
-                                -- for these first three states, we only have a single frame we care about.
-                                Standing ->
-                                    frame sprite.tail.stand
+                            if model.isGrounded then
+                                case action of
+                                    -- for these first three states, we only have a single frame we care about.
+                                    Standing ->
+                                        frame sprite.tail.stand
 
-                                Ducking ->
-                                    frame sprite.tail.duck
+                                    Ducking ->
+                                        frame sprite.tail.duck
 
-                                Jumping ->
-                                    frame sprite.tail.jump
+                                    Walking ->
+                                        -- when we're in a `Walking` state, we want to cycle through 3 frames.
+                                        -- And we can also specify our frames per secton
+                                        Animator.framesWith
+                                            -- `transition` are the frames we'd want to take when transitioning to this state.
+                                            { transition = frame sprite.tail.stand
 
-                                Falling ->
-                                    frame sprite.tail.fall
+                                            -- `resting` is what we want to do while we're in this state.
+                                            , resting =
+                                                Animator.cycle
+                                                    (Animator.fps 15)
+                                                    [ frame sprite.tail.step1
+                                                    , frame sprite.tail.stand
+                                                    ]
+                                            }
 
-                                Walking ->
-                                    -- when we're in a `Walking` state, we want to cycle through 3 frames.
-                                    -- And we can also specify our frames per secton
-                                    Animator.framesWith
-                                        -- `transition` are the frames we'd want to take when transitioning to this state.
-                                        { transition = frame sprite.tail.stand
+                                    Running ->
+                                        -- In order to make mario go faster, we're upping the fps
+                                        -- and we're also changing the frames so that he puts his arms out.
+                                        Animator.framesWith
+                                            { transition = frame sprite.tail.standArms
+                                            , resting =
+                                                Animator.cycle
+                                                    (Animator.fps 30)
+                                                    [ frame sprite.tail.runStep1
+                                                    , frame sprite.tail.runStep2
+                                                    , frame sprite.tail.standArms
+                                                    ]
+                                            }
 
-                                        -- `resting` is what we want to do while we're in this state.
-                                        , resting =
-                                            Animator.cycle
-                                                (Animator.fps 15)
-                                                [ frame sprite.tail.step1
-                                                , frame sprite.tail.stand
-                                                ]
-                                        }
+                            else if model.vy > jumpForce * 0.85 then
+                                frame sprite.tail.velocityUpFast
 
-                                Running ->
-                                    -- In order to make mario go faster, we're upping the fps
-                                    -- and we're also changing the frames so that he puts his arms out.
-                                    Animator.framesWith
-                                        { transition = frame sprite.tail.standArms
-                                        , resting =
-                                            Animator.cycle
-                                                (Animator.fps 30)
-                                                [ frame sprite.tail.runStep1
-                                                , frame sprite.tail.runStep2
-                                                , frame sprite.tail.standArms
-                                                ]
-                                        }
+                            else if model.vy > 0 then
+                                frame sprite.tail.velocityUpSlow
+
+                            else if model.vy < jumpForce * -0.85 then
+                                frame sprite.tail.velocityDownFast
+
+                            else if model.vy < 0 then
+                                frame sprite.tail.velocityDownSlow
+
+                            else
+                                frame sprite.tail.stand
                     )
                 ]
             ]
@@ -493,12 +497,12 @@ walk pad mario =
 
 jumpForce : Float
 jumpForce =
-    6.0
+    10.0
 
 
 jump : GamePad -> Model -> Model
 jump pad mario =
-    if pad.jump == StartPressed && mario.vy == 0 then
+    if mario.isGrounded && pad.jump == StartPressed then
         { mario | vy = jumpForce }
 
     else
@@ -507,13 +511,17 @@ jump pad mario =
 
 gravity : Float -> Model -> Model
 gravity dt mario =
-    { mario
-        | vy =
+    let
+        ( isGrounded, newVy ) =
             if mario.y > 0 then
-                mario.vy - dt / 4
+                ( False, mario.vy - dt / 4 )
 
             else
-                0
+                ( True, 0 )
+    in
+    { mario
+        | vy = newVy
+        , isGrounded = isGrounded
     }
 
 
@@ -547,14 +555,7 @@ updateSprites model =
                         currentDirection
 
         action =
-            if model.y /= 0 then
-                if model.vy > 0 then
-                    Jumping
-
-                else
-                    Falling
-
-            else if model.vx /= 0 then
+            if model.vx /= 0 then
                 if abs model.vx > 2 then
                     Running
 
@@ -579,11 +580,6 @@ updateSprites model =
 
     else
         model
-
-
-roughlyEqual : Float -> Float -> Float -> Bool
-roughlyEqual margin a b =
-    a + margin >= b && a - margin <= b
 
 
 
@@ -629,7 +625,7 @@ sprite =
             , flipX = False
             , flipY = False
             }
-        , jump =
+        , velocityUpSlow =
             { x = 0
             , y = 16
             , width = 16
@@ -639,8 +635,28 @@ sprite =
             , flipX = False
             , flipY = False
             }
-        , fall =
+        , velocityUpFast =
             { x = 16
+            , y = 16
+            , width = 16
+            , height = 16
+            , adjustX = 0
+            , adjustY = 0
+            , flipX = False
+            , flipY = False
+            }
+        , velocityDownSlow =
+            { x = 32
+            , y = 16
+            , width = 16
+            , height = 16
+            , adjustX = 0
+            , adjustY = 0
+            , flipX = False
+            , flipY = False
+            }
+        , velocityDownFast =
+            { x = 48
             , y = 16
             , width = 16
             , height = 16

@@ -4,7 +4,7 @@
   "version": "2.0.0",
   "description": "A little slime buddy",
   "scripts": {
-    "dev": "elm-live src/Main.elm --start-page index.html --dir src -- --output src/elm.js",
+    "dev": "elm-live src/Main.elm --start-page index.html --dir src -- --debug --output src/elm.js",
     "build": "run-p build:**",
     "build:elm": "elm make src/Main.elm --optimize --output=dist/elm.js && node build.js",
     "build:static": "mkdir dist && cp src/index.html dist/index.html && cp src/manifest.json dist/manifest.json && cp src/service-worker.js dist/service-worker.js && cp -r src/assets dist/assets",
