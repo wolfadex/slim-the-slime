@@ -4,8 +4,11 @@ import Animator
 import Browser
 import Browser.Dom
 import Browser.Events
-import Html exposing (Html)
-import Html.Attributes as Attr
+import Canvas exposing (Renderable)
+import Canvas.Settings
+import Canvas.Settings.Text
+import Canvas.Texture exposing (Texture)
+import Color
 import Json.Decode as Decode
 import Task
 import Time
@@ -21,7 +24,36 @@ type alias Model =
     , isGrounded : Bool
     , window : Window
     , gamepad : GamePad
-    , mario : Animator.Timeline Mario
+    , slime : Animator.Timeline Slime
+    , sprites : Loadable Sprites
+    }
+
+
+type Loadable a
+    = Loading
+    | Loaded a
+    | Failure
+
+
+type alias Sprites =
+    { player :
+        { right :
+            { stand : Texture
+            , walk : Texture
+            , fallSlow : Texture
+            , fallFast : Texture
+            , jumpSlow : Texture
+            , jumpFast : Texture
+            }
+        , left :
+            { stand : Texture
+            , walk : Texture
+            , fallSlow : Texture
+            , fallFast : Texture
+            , jumpSlow : Texture
+            , jumpFast : Texture
+            }
+        }
     }
 
 
@@ -50,8 +82,8 @@ type alias Window =
     }
 
 
-type Mario
-    = Mario Action Direction
+type Slime
+    = Slime Action Direction
 
 
 type Action
@@ -72,6 +104,7 @@ type Msg
     | Pressed Button
     | Released Button
     | WindowSize Int Int
+    | TextureLoaded (Maybe Texture)
 
 
 type Button
@@ -107,7 +140,8 @@ init () =
             , run = NotPressed
             , duck = NotPressed
             }
-      , mario = Animator.init (Mario Standing Right)
+      , slime = Animator.init (Slime Standing Right)
+      , sprites = Loading
       }
     , Browser.Dom.getViewport
         |> Task.attempt
@@ -127,43 +161,43 @@ init () =
 
 
 update : Msg -> Model -> ( Model, Cmd Msg )
-update msg mario =
+update msg model =
     case msg of
         Tick newTime ->
-            ( mario
+            ( model
                 |> Animator.update newTime animator
             , Cmd.none
             )
 
         Frame dt ->
-            ( mario
+            ( model
                 |> holdButtons dt
                 |> gravity (dt / 10)
-                |> jump mario.gamepad
-                |> walk mario.gamepad
+                |> jump model.gamepad
+                |> walk model.gamepad
                 |> physics (dt / 10)
                 |> updateSprites
             , Cmd.none
             )
 
         Pressed button ->
-            ( { mario
+            ( { model
                 | gamepad =
-                    applyButtonToGamepad button True mario.gamepad
+                    applyButtonToGamepad button True model.gamepad
               }
             , Cmd.none
             )
 
         Released button ->
-            ( { mario
+            ( { model
                 | gamepad =
-                    applyButtonToGamepad button False mario.gamepad
+                    applyButtonToGamepad button False model.gamepad
               }
             , Cmd.none
             )
 
         WindowSize width height ->
-            ( { mario
+            ( { model
                 | window =
                     { width = width
                     , height = height
@@ -172,13 +206,62 @@ update msg mario =
             , Cmd.none
             )
 
+        TextureLoaded Nothing ->
+            ( { model | sprites = Failure }, Cmd.none )
+
+        TextureLoaded (Just texture) ->
+            ( { model
+                | sprites =
+                    Loaded
+                        { player =
+                            { right =
+                                { stand = spriteFromTexture 0 0 texture
+                                , walk = spriteFromTexture 1 0 texture
+                                , jumpSlow = spriteFromTexture 0 0 texture
+                                , jumpFast = spriteFromTexture 0 1 texture
+                                , fallSlow = spriteFromTexture 0 2 texture
+                                , fallFast = spriteFromTexture 0 3 texture
+                                }
+                            , left =
+                                { stand = spriteFromTexture 0 32 texture
+                                , walk = spriteFromTexture 1 32 texture
+                                , jumpSlow = spriteFromTexture 0 33 texture
+                                , jumpFast = spriteFromTexture 1 33 texture
+                                , fallSlow = spriteFromTexture 2 33 texture
+                                , fallFast = spriteFromTexture 3 33 texture
+                                }
+                            }
+                        }
+              }
+            , Cmd.none
+            )
+
+
+spriteSheetCellSize : number
+spriteSheetCellSize =
+    16
+
+
+spriteSheetCellSpace : number
+spriteSheetCellSpace =
+    0
+
+
+spriteFromTexture : Float -> Float -> Texture -> Texture
+spriteFromTexture x y =
+    Canvas.Texture.sprite
+        { x = x * (spriteSheetCellSize + spriteSheetCellSpace)
+        , y = y * (spriteSheetCellSize + spriteSheetCellSpace)
+        , width = spriteSheetCellSize
+        , height = spriteSheetCellSize
+        }
+
 
 {-| -}
 subscriptions : Model -> Sub Msg
 subscriptions model =
     Sub.batch
-        [ animator
-            |> Animator.toSubscription Tick model
+        [ Animator.toSubscription Tick model animator
         , Browser.Events.onResize WindowSize
         , Browser.Events.onKeyDown (Decode.map Pressed decodeButton)
         , Browser.Events.onKeyUp (Decode.map Released decodeButton)
@@ -191,7 +274,7 @@ animator =
     Animator.animator
         -- we tell the animator how to get the checked timeline using .checked
         -- and we tell the animator how to update that timeline with updateChecked
-        |> Animator.watching .mario (\mario m -> { m | mario = mario })
+        |> Animator.watching .slime (\slime m -> { m | slime = slime })
 
 
 decodeButton : Decode.Decoder Button
@@ -317,141 +400,128 @@ applyButtonToGamepad button pressed gamepad =
             }
 
 
+textures : List (Canvas.Texture.Source Msg)
+textures =
+    [ Canvas.Texture.loadFromImageUrl "./assets/slime/slime-sprites.png" TextureLoaded
+    ]
+
+
 view : Model -> Browser.Document Msg
 view model =
-    { title = "Mario - Elm Animator"
+    { title = "Slim the Slime"
     , body =
-        [ stylesheet
-        , Html.div
-            [ Attr.style "position" "fixed"
-            , Attr.style "left" "0"
-            , Attr.style "top" "0"
-            , Attr.style "width" (String.fromInt model.window.width ++ "px")
-            , Attr.style "height" (String.fromInt model.window.height ++ "px")
-            ]
-            [ Html.div
-                [ Attr.style "position" "absolute"
-                , Attr.style "top" "80px"
-                , Attr.style "left" "80px"
-                , Attr.style "user-select" "none"
-                , Attr.style "font-family" "'Roboto', sans-serif"
-                ]
-                [ Html.h1 [] [ Html.text "Mario" ]
-                , Html.div [] [ Html.text "Arrows to move, shift to run, space to jump!" ]
-                ]
-            , Html.div
-                [ Attr.class "positioner"
-                , Attr.style "position" "absolute"
-                , Attr.style "top" (String.fromFloat ((toFloat model.window.height / 2) - model.y) ++ "px")
-                , Attr.style "left" (String.fromFloat model.x ++ "px")
-                ]
-                -- (2) - Animating Mario's state with sprites
-                --      We're watching te model.mario timeline, which has both a direction and an action that mario is currently doing.
-                --
-                [ viewSprite
-                    (Animator.step model.mario <|
-                        \(Mario action direction) ->
-                            let
-                                -- this is where we decide to show the left or the right sprite.
-                                --
-                                frame mySprite =
-                                    case direction of
-                                        Left ->
-                                            Animator.frame { mySprite | flipX = True }
+        [ Canvas.toHtmlWith
+            { width = canvasSize
+            , height = canvasSize
+            , textures = textures
+            }
+            []
+            (Canvas.shapes
+                [ Canvas.Settings.fill (Color.rgb 0.85 0.92 1) ]
+                [ Canvas.rect ( 0, 0 ) canvasSize canvasSize ]
+                :: (case model.sprites of
+                        Loading ->
+                            [ renderText "Loading sprite sheet" ]
 
-                                        Right ->
-                                            Animator.frame mySprite
-                            in
-                            if model.isGrounded then
-                                case action of
-                                    -- for these first three states, we only have a single frame we care about.
-                                    Standing ->
-                                        frame sprite.tail.stand
+                        Loaded ss ->
+                            renderSprites model ss
 
-                                    Ducking ->
-                                        frame sprite.tail.duck
-
-                                    Walking ->
-                                        -- when we're in a `Walking` state, we want to cycle through 3 frames.
-                                        -- And we can also specify our frames per secton
-                                        Animator.framesWith
-                                            -- `transition` are the frames we'd want to take when transitioning to this state.
-                                            { transition = frame sprite.tail.stand
-
-                                            -- `resting` is what we want to do while we're in this state.
-                                            , resting =
-                                                Animator.cycle
-                                                    (Animator.fps 15)
-                                                    [ frame sprite.tail.step1
-                                                    , frame sprite.tail.stand
-                                                    ]
-                                            }
-
-                                    Running ->
-                                        -- In order to make mario go faster, we're upping the fps
-                                        -- and we're also changing the frames so that he puts his arms out.
-                                        Animator.framesWith
-                                            { transition = frame sprite.tail.standArms
-                                            , resting =
-                                                Animator.cycle
-                                                    (Animator.fps 30)
-                                                    [ frame sprite.tail.runStep1
-                                                    , frame sprite.tail.runStep2
-                                                    , frame sprite.tail.standArms
-                                                    ]
-                                            }
-
-                            else if model.vy > jumpForce * 0.85 then
-                                frame sprite.tail.velocityUpFast
-
-                            else if model.vy > 0 then
-                                frame sprite.tail.velocityUpSlow
-
-                            else if model.vy < jumpForce * -0.85 then
-                                frame sprite.tail.velocityDownFast
-
-                            else if model.vy < 0 then
-                                frame sprite.tail.velocityDownSlow
-
-                            else
-                                frame sprite.tail.stand
-                    )
-                ]
-            ]
+                        Failure ->
+                            [ renderText "Failed to load sprite sheet!" ]
+                   )
+            )
         ]
     }
 
 
-viewSprite : Box -> Html msg
-viewSprite box =
-    Html.div []
-        [ Html.div
-            [ Attr.style "position" "absolute"
-            , Attr.style "top" (String.fromInt box.adjustY ++ "px")
-            , Attr.style "left" (String.fromInt box.adjustX ++ "px")
-            , Attr.style "width" (String.fromInt box.width ++ "px")
-            , Attr.style "height" (String.fromInt box.height ++ "px")
-            , Attr.style "background-image" "url('assets/slime/slime-sprites.png')"
-            , Attr.style "background-repeat" "no-repeat"
-            , Attr.style "transform-origin" "30% 50%"
-            , Attr.style "transform"
-                (if box.flipX then
-                    "scaleX(-1) scale(2)"
+renderSprites : Model -> Sprites -> List Renderable
+renderSprites model sprites =
+    (\(Slime action direction) ->
+        let
+            -- this is where we decide to show the left or the right sprite.
+            --
+            frame pose =
+                case direction of
+                    Left ->
+                        Animator.frame (pose sprites.player.left)
 
-                 else
-                    "scaleX(1) scale(2)"
-                )
-            , Attr.style "background-position"
-                ("-"
-                    ++ (String.fromInt box.x ++ "px -")
-                    ++ (String.fromInt box.y ++ "px")
-                )
+                    Right ->
+                        Animator.frame (pose sprites.player.right)
+        in
+        if model.isGrounded then
+            case action of
+                -- for these first three states, we only have a single frame we care about.
+                Standing ->
+                    frame .stand
 
-            -- we need to tell the browser to render our image and leave the pixels pixelated.
-            , Attr.class "pixel-art"
-            ]
-            []
+                Ducking ->
+                    frame .stand
+
+                Walking ->
+                    -- when we're in a `Walking` state, we want to cycle through 3 frames.
+                    -- And we can also specify our frames per secton
+                    Animator.framesWith
+                        -- `transition` are the frames we'd want to take when transitioning to this state.
+                        { transition = frame .stand
+
+                        -- `resting` is what we want to do while we're in this state.
+                        , resting =
+                            Animator.cycle
+                                (Animator.fps 15)
+                                [ frame .walk
+                                , frame .stand
+                                ]
+                        }
+
+                Running ->
+                    -- In order to make Slim go faster, we're upping the fps
+                    -- and we're also changing the frames so that he puts his arms out.
+                    -- Animator.framesWith
+                    --     { transition = frame sprite.tail.standArms
+                    --     , resting =
+                    --         Animator.cycle
+                    --             (Animator.fps 30)
+                    --             [ frame sprite.tail.runStep1
+                    --             , frame sprite.tail.runStep2
+                    --             , sprites.player
+                    --             ]
+                    --     }
+                    Debug.todo ""
+
+        else if model.vy > jumpForce * 0.85 then
+            frame .jumpFast
+
+        else if model.vy > 0 then
+            frame .jumpSlow
+
+        else if model.vy < jumpForce * -0.85 then
+            frame .fallFast
+
+        else if model.vy < 0 then
+            frame .fallSlow
+
+        else
+            frame .stand
+    )
+        |> Animator.step model.slime
+        |> Canvas.texture [] ( model.x, model.y )
+        |> List.singleton
+
+
+canvasSize : number
+canvasSize =
+    spriteSheetCellSize * 8
+
+
+renderText : String -> Renderable
+renderText txt =
+    Canvas.text
+        [ Canvas.Settings.Text.font { size = 48, family = "sans-serif" }
+        , Canvas.Settings.Text.align Canvas.Settings.Text.Center
+        , Canvas.Settings.Text.maxWidth canvasSize
         ]
+        ( canvasSize / 2, canvasSize / 2 - 24 )
+        txt
 
 
 isHeld : Pressed -> Bool
@@ -468,10 +538,13 @@ isHeld pressed =
 
 
 walk : GamePad -> Model -> Model
-walk pad mario =
+walk pad model =
     let
         run yes x =
-            if yes then
+            if not model.isGrounded then
+                x * 0.75
+
+            else if yes then
                 x * 2.0
 
             else
@@ -490,49 +563,47 @@ walk pad mario =
             else
                 0
     in
-    { mario
-        | vx = newVx
-    }
+    { model | vx = newVx }
 
 
 jumpForce : Float
 jumpForce =
-    10.0
+    -5.0
 
 
 jump : GamePad -> Model -> Model
-jump pad mario =
-    if mario.isGrounded && pad.jump == StartPressed then
-        { mario | vy = jumpForce }
+jump pad model =
+    if model.isGrounded && pad.jump == StartPressed then
+        { model | vy = jumpForce }
 
     else
-        mario
+        model
 
 
 gravity : Float -> Model -> Model
-gravity dt mario =
+gravity dt model =
     let
         ( isGrounded, newVy ) =
-            if mario.y > 0 then
-                ( False, mario.vy - dt / 4 )
+            if model.y < 100 then
+                ( False, model.vy + dt / 4 )
 
             else
                 ( True, 0 )
     in
-    { mario
+    { model
         | vy = newVy
         , isGrounded = isGrounded
     }
 
 
 physics : Float -> Model -> Model
-physics dt mario =
-    { mario
+physics dt model =
+    { model
         | x =
-            (mario.x + dt * mario.vx)
-                |> min (toFloat mario.window.width - 40)
+            (model.x + dt * model.vx)
+                |> min (canvasSize - spriteSheetCellSize)
                 |> max 0
-        , y = max 0 (mario.y + dt * mario.vy)
+        , y = max 0 (model.y + dt * model.vy)
     }
 
 
@@ -540,7 +611,7 @@ updateSprites : Model -> Model
 updateSprites model =
     let
         current =
-            Animator.current model.mario
+            Animator.current model.slime
 
         direction =
             if model.vx > 0 then
@@ -551,7 +622,7 @@ updateSprites model =
 
             else
                 case current of
-                    Mario _ currentDirection ->
+                    Slime _ currentDirection ->
                         currentDirection
 
         action =
@@ -568,232 +639,15 @@ updateSprites model =
             else
                 Standing
 
-        newMario =
-            Mario action direction
+        newSlime =
+            Slime action direction
     in
-    if current /= newMario then
+    if current /= newSlime then
         { model
-            | mario =
-                model.mario
-                    |> Animator.go Animator.immediately newMario
+            | slime =
+                model.slime
+                    |> Animator.go Animator.immediately newSlime
         }
 
     else
         model
-
-
-
-{- (1) - Sprite Sheet
-   x, y -> the coordinates of the image on the sprite sheet
-   width, height -> the size of the image I want
-   adjustX, adjustY -> adjustX and adjustY move the position of the rendered image so that we can line it up with the previous frames.
-   flipX, flipY ->  The sprite sheet only shows mario looking in one direction.  Though we can flip that image if we need to!
--}
-
-
-type alias Box =
-    { x : Int
-    , y : Int
-    , width : Int
-    , height : Int
-    , adjustX : Int
-    , adjustY : Int
-    , flipX : Bool
-    , flipY : Bool
-    }
-
-
-sprite =
-    { tail =
-        { stand =
-            { x = 0
-            , y = 0
-            , width = 16
-            , height = 16
-            , adjustX = 0
-            , adjustY = 0
-            , flipX = False
-            , flipY = False
-            }
-        , step1 =
-            { x = 16
-            , y = 0
-            , width = 16
-            , height = 16
-            , adjustX = 0
-            , adjustY = 0
-            , flipX = False
-            , flipY = False
-            }
-        , velocityUpSlow =
-            { x = 0
-            , y = 16
-            , width = 16
-            , height = 16
-            , adjustX = 0
-            , adjustY = 0
-            , flipX = False
-            , flipY = False
-            }
-        , velocityUpFast =
-            { x = 16
-            , y = 16
-            , width = 16
-            , height = 16
-            , adjustX = 0
-            , adjustY = 0
-            , flipX = False
-            , flipY = False
-            }
-        , velocityDownSlow =
-            { x = 32
-            , y = 16
-            , width = 16
-            , height = 16
-            , adjustX = 0
-            , adjustY = 0
-            , flipX = False
-            , flipY = False
-            }
-        , velocityDownFast =
-            { x = 48
-            , y = 16
-            , width = 16
-            , height = 16
-            , adjustX = 0
-            , adjustY = 0
-            , flipX = False
-            , flipY = False
-            }
-
-        --
-        --
-        --
-        --
-        --
-        , duck =
-            { x = 120
-            , y = 235
-            , width = 27
-            , height = 30
-            , adjustX = 5
-            , adjustY = 0
-            , flipX = False
-            , flipY = False
-            }
-        , pivot =
-            { x = 150
-            , y = 240
-            , width = 27
-            , height = 30
-            , adjustX = 0
-            , adjustY = 0
-            , flipX = False
-            , flipY = False
-            }
-        , kick =
-            { x = 180
-            , y = 240
-            , width = 27
-            , height = 30
-            , adjustX = -1
-            , adjustY = 0
-            , flipX = False
-            , flipY = False
-            }
-        , bum =
-            { x = 208
-            , y = 239
-            , width = 20
-            , height = 30
-            , adjustX = 3
-            , adjustY = 0
-            , flipX = False
-            , flipY = False
-            }
-        , standArms =
-            { x = 0
-            , y = 280
-            , width = 25
-            , height = 30
-            , adjustX = 4
-            , adjustY = 0
-            , flipX = False
-            , flipY = False
-            }
-        , runStep1 =
-            { x = 25
-            , y = 280
-            , width = 27
-            , height = 30
-            , adjustX = 3
-            , adjustY = 0
-            , flipX = False
-            , flipY = False
-            }
-        , runStep2 =
-            { x = 52
-            , y = 280
-            , width = 25
-            , height = 30
-            , adjustX = 4
-            , adjustY = 0
-            , flipX = False
-            , flipY = False
-            }
-        , runJump1 =
-            { x = 329
-            , y = 280
-            , width = 27
-            , height = 30
-            , adjustX = 3
-            , adjustY = 0
-            , flipX = False
-            , flipY = False
-            }
-        , runJump2 =
-            { x = 359
-            , y = 280
-            , width = 27
-            , height = 30
-            , adjustX = 3
-            , adjustY = 0
-            , flipX = False
-            , flipY = False
-            }
-        , runJump3 =
-            { x = 389
-            , y = 280
-            , width = 27
-            , height = 30
-            , adjustX = 3
-            , adjustY = 0
-            , flipX = False
-            , flipY = False
-            }
-        }
-    }
-
-
-stylesheet : Html msg
-stylesheet =
-    Html.node "style"
-        []
-        [ Html.text """
-body,
-html {
-    margin: 0;
-    padding:0;
-    border:0;
-    display:block;
-    position: relative;
-    width: 100%;
-    height: 100%;
-}
-.pixel-art {
-    image-rendering: pixelated;
-    image-rendering: -moz-crisp-edges;
-    image-rendering: crisp-edges;
-}
-"""
-        ]
